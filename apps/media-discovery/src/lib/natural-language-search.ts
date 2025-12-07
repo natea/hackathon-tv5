@@ -12,17 +12,18 @@ import { searchMulti, getSimilarMovies, getSimilarTVShows, discoverMovies, disco
 import { searchByEmbedding, getContentEmbedding, calculateSimilarity } from './vector-search';
 
 // Schema for parsed search intent
+// Note: All fields are optional AND nullable to handle AI returning null for empty values
 const SearchIntentSchema = z.object({
-  mood: z.array(z.string()).optional().describe('Emotional tone or feeling (e.g., "exciting", "heartwarming", "dark")'),
-  themes: z.array(z.string()).optional().describe('Story themes (e.g., "redemption", "coming-of-age", "survival")'),
-  pacing: z.enum(['slow', 'medium', 'fast']).optional().describe('Preferred pacing of the content'),
-  era: z.string().optional().describe('Time period setting (e.g., "1980s", "modern", "futuristic")'),
-  setting: z.array(z.string()).optional().describe('Physical setting (e.g., "space", "urban", "underwater")'),
-  similar_to: z.array(z.string()).optional().describe('Similar movies/shows mentioned by user'),
-  avoid: z.array(z.string()).optional().describe('Elements to avoid (e.g., "gore", "jump scares")'),
-  genres: z.array(z.string()).optional().describe('Inferred genres from the query'),
-  keywords: z.array(z.string()).optional().describe('Key search terms extracted'),
-  mediaType: z.enum(['movie', 'tv', 'all']).optional().describe('Preferred media type'),
+  mood: z.array(z.string()).optional().nullable().describe('Emotional tone or feeling (e.g., "exciting", "heartwarming", "dark")'),
+  themes: z.array(z.string()).optional().nullable().describe('Story themes (e.g., "redemption", "coming-of-age", "survival")'),
+  pacing: z.enum(['slow', 'medium', 'fast']).optional().nullable().describe('Preferred pacing of the content'),
+  era: z.union([z.string(), z.array(z.string())]).optional().nullable().describe('Time period setting (e.g., "1980s", "modern", "futuristic")'),
+  setting: z.array(z.string()).optional().nullable().describe('Physical setting (e.g., "space", "urban", "underwater")'),
+  similar_to: z.array(z.string()).optional().nullable().describe('Similar movies/shows mentioned by user'),
+  avoid: z.array(z.string()).optional().nullable().describe('Elements to avoid (e.g., "gore", "jump scares")'),
+  genres: z.array(z.string()).optional().nullable().describe('Inferred genres from the query'),
+  keywords: z.array(z.string()).optional().nullable().describe('Key search terms extracted'),
+  mediaType: z.enum(['movie', 'tv', 'all']).optional().nullable().describe('Preferred media type'),
 });
 
 const SearchFiltersSchema = z.object({
@@ -42,21 +43,43 @@ const INTENT_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minute TTL
 // Genre mapping for common genre names to TMDB IDs
 const GENRE_MAP: Record<string, { movie: number; tv: number }> = {
   action: { movie: 28, tv: 10759 },
+  'action & adventure': { movie: 28, tv: 10759 },
   adventure: { movie: 12, tv: 10759 },
   animation: { movie: 16, tv: 16 },
+  animated: { movie: 16, tv: 16 },
+  anime: { movie: 16, tv: 16 },  // Anime maps to Animation genre
+  cartoon: { movie: 16, tv: 16 },
   comedy: { movie: 35, tv: 35 },
   crime: { movie: 80, tv: 80 },
   documentary: { movie: 99, tv: 99 },
   drama: { movie: 18, tv: 18 },
   family: { movie: 10751, tv: 10751 },
+  // Aliases for family-friendly content
+  children: { movie: 10751, tv: 10751 },
+  "children's": { movie: 10751, tv: 10751 },
+  kids: { movie: 10751, tv: 10751 },
+  "kid's": { movie: 10751, tv: 10751 },
+  "kid-friendly": { movie: 10751, tv: 10751 },
+  "family-friendly": { movie: 10751, tv: 10751 },
   fantasy: { movie: 14, tv: 10765 },
-  horror: { movie: 27, tv: 9648 },
+  'sci-fi & fantasy': { movie: 14, tv: 10765 },
+  history: { movie: 36, tv: 36 },
+  historical: { movie: 36, tv: 36 },
+  horror: { movie: 27, tv: 27 },
+  scary: { movie: 27, tv: 27 },
+  music: { movie: 10402, tv: 10402 },
+  musical: { movie: 10402, tv: 10402 },
   mystery: { movie: 9648, tv: 9648 },
   romance: { movie: 10749, tv: 10749 },
+  romantic: { movie: 10749, tv: 10749 },
+  'romantic comedy': { movie: 35, tv: 35 },
+  'rom-com': { movie: 35, tv: 35 },
   'sci-fi': { movie: 878, tv: 10765 },
   'science fiction': { movie: 878, tv: 10765 },
   thriller: { movie: 53, tv: 53 },
+  suspense: { movie: 53, tv: 53 },
   war: { movie: 10752, tv: 10768 },
+  'war & politics': { movie: 10752, tv: 10768 },
   western: { movie: 37, tv: 37 },
 };
 
@@ -99,15 +122,20 @@ Extract:
 Be specific and extract as much relevant information as possible.`,
     });
 
-    // Convert genre names to IDs
-    const genreIds = intent.genres?.flatMap(genre => {
-      const normalized = genre.toLowerCase();
+    // Convert genre names to IDs (handle null arrays from AI)
+    const genresList = intent.genres || [];
+    const genreIds = genresList.flatMap(genre => {
+      const normalized = genre.toLowerCase().trim();
       const mapping = GENRE_MAP[normalized];
       if (mapping) {
         return [mapping.movie, mapping.tv].filter((v, i, a) => a.indexOf(v) === i);
       }
+      // Log unmapped genres for debugging
+      console.log(`⚠️ Unmapped genre: "${genre}" (normalized: "${normalized}")`);
       return [];
-    }) || [];
+    });
+
+    console.log(`🎬 Parsed intent - genres: [${genresList.join(', ')}] -> IDs: [${genreIds.join(', ')}]`);
 
     const result: SemanticSearchQuery = {
       query,
@@ -138,6 +166,7 @@ export async function semanticSearch(
 ): Promise<SearchResult[]> {
   // Parse the natural language query
   const semanticQuery = await parseSearchQuery(query);
+  console.log(`🔍 Semantic query:`, JSON.stringify(semanticQuery, null, 2));
 
   // Parallel search strategies
   const [tmdbResults, vectorResults] = await Promise.all([
@@ -145,8 +174,12 @@ export async function semanticSearch(
     performVectorSearch(semanticQuery),
   ]);
 
+  console.log(`📊 TMDB results: ${tmdbResults.length}, Vector results: ${vectorResults.length}`);
+
   // Merge and rank results
   const mergedResults = mergeAndRankResults(tmdbResults, vectorResults, semanticQuery, userPreferences);
+
+  console.log(`📊 Merged results: ${mergedResults.length}`);
 
   return mergedResults;
 }
@@ -159,7 +192,9 @@ async function performTMDBSearch(query: SemanticSearchQuery): Promise<SearchResu
 
   // Text search - prioritize direct title matches
   if (query.query) {
+    console.log(`🔎 TMDB text search for: "${query.query}"`);
     const { results: textResults } = await searchMulti(query.query, query.filters);
+    console.log(`🔎 TMDB text search returned: ${textResults.length} results`);
 
     // Check if the query looks like a specific title (contains proper nouns or is in similar_to)
     const queryLower = query.query.toLowerCase();
@@ -225,15 +260,40 @@ async function performTMDBSearch(query: SemanticSearchQuery): Promise<SearchResu
   }
 
   // Discovery-based search with filters
-  if (query.filters?.genres?.length) {
-    const movieGenres = query.filters.genres.filter(id => id < 10000);
-    const tvGenres = query.filters.genres.filter(id => id >= 10000 || GENRE_MAP.action?.tv === id);
+  let genresForDiscovery = query.filters?.genres || [];
+  console.log(`🎬 Initial genres for discovery: [${genresForDiscovery.join(', ')}]`);
 
-    if (query.filters.mediaType !== 'tv' && movieGenres.length > 0) {
+  // If no genres mapped but keywords suggest children/family content, use family genre
+  if (genresForDiscovery.length === 0) {
+    const keywords = (query.intent?.keywords || []).map(k => k.toLowerCase());
+    const themes = (query.intent?.themes || []).map(t => t.toLowerCase());
+    const allText = [
+      query.query.toLowerCase(),
+      ...themes,
+      ...keywords,
+    ].join(' ');
+
+    console.log(`🔍 Checking for children/family keywords in: "${allText}"`);
+
+    if (allText.match(/\b(children|kids?|family|child|young|appropriate|age|year.?old)\b/i)) {
+      console.log('🎯 Detected children/family intent, adding family genre');
+      genresForDiscovery = [10751]; // Family genre ID
+    }
+  }
+
+  console.log(`🎬 Final genres for discovery: [${genresForDiscovery.join(', ')}]`);
+
+  if (genresForDiscovery.length > 0) {
+    // Note: Many genre IDs work for both movies and TV (e.g., family=10751, comedy=35)
+    // Don't filter by ID range - just use all genres for both movie and TV discovery
+    console.log(`🎬 Running discovery with genres: [${genresForDiscovery.join(', ')}]`);
+
+    if (query.filters?.mediaType !== 'tv') {
       const { results: discoveredMovies } = await discoverMovies({
-        genres: movieGenres,
-        ratingMin: query.filters.ratingMin,
+        genres: genresForDiscovery,
+        ratingMin: query.filters?.ratingMin,
       });
+      console.log(`🎬 Discovered ${discoveredMovies.length} movies`);
       results.push(...discoveredMovies.map(content => ({
         content,
         relevanceScore: 0.7,
@@ -241,11 +301,12 @@ async function performTMDBSearch(query: SemanticSearchQuery): Promise<SearchResu
       })));
     }
 
-    if (query.filters.mediaType !== 'movie' && tvGenres.length > 0) {
+    if (query.filters?.mediaType !== 'movie') {
       const { results: discoveredShows } = await discoverTVShows({
-        genres: tvGenres,
-        ratingMin: query.filters.ratingMin,
+        genres: genresForDiscovery,
+        ratingMin: query.filters?.ratingMin,
       });
+      console.log(`🎬 Discovered ${discoveredShows.length} TV shows`);
       results.push(...discoveredShows.map(content => ({
         content,
         relevanceScore: 0.7,
